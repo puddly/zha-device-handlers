@@ -453,7 +453,7 @@ If you are instead using some custom python installation of Home Assistant then 
 
 # Testing new quirks
 
-New quirks and changes to existing quirks can be run as "custom quirks". If you are using Supervised Home Assistant, read the [Advanced Configuration](https://www.home-assistant.io/getting-started/configuration/) for a few ways to gain access to the `/config/` folder and the `configuration.yaml` file.
+New quirks and changes to existing quirks can be installed as "custom quirks". If you are using Supervised Home Assistant, read the [Advanced Configuration](https://www.home-assistant.io/getting-started/configuration/) for a few ways to gain access to the `/config/` folder and the `configuration.yaml` file.
 
 Create the following entry under the `zha` key in your `configuration.yaml` file:
 
@@ -462,7 +462,9 @@ zha:
   custom_quirks_path: /config/zha_custom_quirks/
 ```
 
-Create an empty file titled `__init__.py` and place it into your custom quirks folder. This will turn it into a Python module. New quirks can then be added to this folder and will take precedence over existing ones if both match a given device, allowing you to override existing quirks without having to modify the `zhaquirks` Python package directly. To ensure code changes are reflected, delete the `__pycache__` folder within your custom quirk path. Restart Home Assistant after making any changes.
+Create an empty file titled `__init__.py` and place it into your custom quirks folder. This will turn it into a Python module. New quirks can then be added to this folder and will take precedence over existing ones if both match a given device, allowing you to override existing quirks without having to modify the `zhaquirks` Python package directly. To ensure code changes are reflected, delete the `__pycache__` folder within your custom quirk path.
+
+Restart Home Assistant after making any changes.
 
 ## A note about imports in custom quirks
 
