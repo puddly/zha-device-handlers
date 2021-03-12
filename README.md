@@ -59,9 +59,9 @@ A simple descriptor is a description of a Zigbee device endpoint and is responsi
 
 In human terms you can think of a quirk like google translate. I know it's a weird comparison but lets dig in a bit. You may only speak one language but there is an interesting article written in another language that you really want to read. Google translate takes the original article and displays it in a format (language) that you understand. A quirk is a file that translates device functionality from the format that the manufacturer chose to implement it in to a format that Zigpy and in turn ZHA understand. The main purpose of a quirk is to serve as a translator. A quirk is comprised of several parts:
 
-- Signature - To identify and apply the correct quirk
-- Replacement - To allow Zigpy and ZHA to correctly work with the device
-- device_automation_triggers - To let the Home Assistant Device Automation engine and users interact with the device
+- **Signature** - To identify and apply the correct quirk
+- **Replacement** - To allow Zigpy and ZHA to correctly work with the device
+- `device_automation_triggers` - To let the Home Assistant Device Automation engine and users interact with the device
 
 ### Signature
 
@@ -132,7 +132,7 @@ replacement = {
 }
 ```
 
-### device_automation_triggers
+### `device_automation_triggers`
 
 Device automation triggers are essentially representations of the events that the devices fire in HA. They allow users to use actions in the UI instead of using the raw events.
 
@@ -451,24 +451,48 @@ If you are instead using some custom python installation of Home Assistant then 
   pip install zha-quirks==0.0.38
   ```
 
-# Testing quirks in development in docker based install
+# Testing new quirks
 
-If you are using Supervised Home Assistant (formerly known as the Hassio/Hass.io distro) you will need to get access to the home-assistant docker container. Directions below are given for using the portainer add-on to do this, there are other methods as well not covered here.
+New quirks and changes to existing quirks can be run as "custom quirks". If you are using Supervised Home Assistant, read the [Advanced Configuration](https://www.home-assistant.io/getting-started/configuration/) for a few ways to gain access to the `/config/` folder and the `configuration.yaml` file.
 
-- Install the portainer add-on (<https://github.com/hassio-addons/addon-portainer>) from Home Assistant Community Add-ons.
-- Follow the add-on documentation to un-hide the home-assistant container (<https://github.com/hassio-addons/addon-portainer/blob/master/portainer/DOCS.md>)
-- Stage the update quirk in a directory within your config directory
-- Use portainer to access a console in the home-assistant container:
+Create the following entry under the `zha` key in your `configuration.yaml` file:
 
-  <img src="https://user-images.githubusercontent.com/11084412/88719260-fdfa7700-d0f0-11ea-8791-88ed3e26915d.png" width=400 >
+```yaml
+zha:
+  custom_quirks_path: /config/zha_custom_quirks/
+```
 
-- Access the quirks directory
-  - on HA > 0.113: /usr/local/lib/python3.8/site-packages/zhaquirks/
-  - on HA < 0.113: /usr/local/lib/python3.7/site-packages/zhaquirks/
-- Copy updated/new quirk to zhaquirks directory: `cp -a /config/temp/NEW_QUIRK ./`
-- Remove the **pycache** folder so it is regenerated `rm -rf ./__pycache__/`
-- Close out the console and restart HA.
-- Note: The added/update quirk will not survive a HA version update.
+Create an empty file titled `__init__.py` and place it into your custom quirks folder. This will turn it into a Python module. New quirks can then be added to this folder and will take precedence over existing ones if both match a given device, allowing you to override existing quirks without having to modify the `zhaquirks` Python package directly. To ensure code changes are reflected, delete the `__pycache__` folder within your custom quirk path. Restart Home Assistant after making any changes.
+
+## A note about imports in custom quirks
+
+Python allows using both [relative and absolute imports](https://docs.python.org/3/reference/import.html#package-relative-imports). Many quirks within the main `zhaquirks` package use relative imports to reduce repetition but since the custom quirks package is independent, the same relative imports will not work within its package structure. When testing a new quirk, use absolute imports for objects that need to be pulled from the `zhaquirks` package itself. For example:
+
+```Python
+# From zhaquirks/xiaomi/aqara/cube_aqgl01.py
+from .. import LUMI, BasicCluster, XiaomiCustomDevice, XiaomiPowerConfiguration
+from ... import CustomCluster
+from ...const import (
+    ARGS,
+    COMMAND,
+    DEVICE_TYPE,
+    ...
+)
+```
+
+Since the full path to this module is `zhaquirks.xiaomi.aqara.cube_aqgl01`, in a custom quick you would replace the relative imports with absolute imports that reference `zhaquirks`:
+
+```Python
+from zhaquirks.xiaomi import LUMI, BasicCluster, XiaomiCustomDevice, XiaomiPowerConfiguration
+from zhaquirks import CustomCluster
+from zhaquirks.const import (
+    ARGS,
+    COMMAND,
+    DEVICE_TYPE,
+    ...
+)
+```
+
 
 # Thanks
 
@@ -481,14 +505,6 @@ If you are using Supervised Home Assistant (formerly known as the Hassio/Hass.io
 ## Zigpy
 
 **[zigpy](https://github.com/zigpy/zigpy)** is **[Zigbee protocol stack](https://en.wikipedia.org/wiki/Zigbee)** integration project to implement the **[Zigbee Home Automation](https://www.zigbee.org/)** standard as a Python 3 library. Zigbee Home Automation integration with zigpy allows you to connect one of many off-the-shelf Zigbee adapters using one of the available Zigbee radio library modules compatible with zigpy to control Zigbee based devices. There is currently support for controlling Zigbee device types such as binary sensors (e.g., motion and door sensors), sensors (e.g., temperature sensors), lightbulbs, switches, locks, fans, covers (blinds, marquees, and more). A working implementation of zigpy exist in **[Home Assistant](https://www.home-assistant.io)** (Python based open source home automation software) as part of its **[ZHA component](https://www.home-assistant.io/components/zha/)**
-
-## ZHA Map
-
-[zha-map](https://github.com/zha-ng/zha-map) project allow building a Zigbee network topology map for ZHA component in Home Assistant.
-
-## zha-network-visualization-card
-
-[zha-network-visualization-card](https://github.com/dmulcahey/zha-network-visualization-card) is a custom Lovelace element for visualizing the Zigbee network map for ZHA component in Home Assistant.
 
 ## ZHA Network Card
 
