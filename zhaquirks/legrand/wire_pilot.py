@@ -7,21 +7,21 @@ from zigpy.zcl import ClusterType
 from zigpy.zcl.foundation import (
     BaseAttributeDefs,
     BaseCommandDefs,
-    Direction,
     ZCLAttributeDef,
     ZCLCommandDef,
 )
 
 from zhaquirks.legrand import LEGRAND, MANUFACTURER_SPECIFIC_CLUSTER_ID
 
-MANUFACTURER_SPECIFIC_CLUSTER_ID_2 = 0xFC40  # 64576
+DEVICE_MODE_WIRE_PILOT_ON = [0x02, 0x00]
+DEVICE_MODE_WIRE_PILOT_OFF = [0x01, 0x00]
 
 
 class LegrandCluster(CustomCluster):
     """LegrandCluster."""
 
     cluster_id = MANUFACTURER_SPECIFIC_CLUSTER_ID
-    name = "LegrandCluster"
+    name = "Legrand"
     ep_attribute = "legrand_cluster"
 
     class AttributeDefs(BaseAttributeDefs):
@@ -42,7 +42,11 @@ class LegrandCluster(CustomCluster):
             type=t.Bool,
             is_manufacturer_specific=True,
         )
-        wire_pilot_mode = ZCLAttributeDef(id=0x4000, type=t.Bool)
+        wire_pilot_mode = ZCLAttributeDef(
+            id=0x4000,
+            type=t.Bool,
+            is_manufacturer_specific=True,
+        )
 
     async def write_attributes(self, attributes, manufacturer=None) -> list:
         """Write attributes to the cluster."""
@@ -50,10 +54,9 @@ class LegrandCluster(CustomCluster):
         attrs = {}
         for attr, value in attributes.items():
             attr_def = self.find_attribute(attr)
-            attr_id = attr_def.id
-            if attr_id == LegrandCluster.AttributeDefs.wire_pilot_mode.id:
+            if attr_def == LegrandCluster.AttributeDefs.wire_pilot_mode:
                 attrs[LegrandCluster.AttributeDefs.device_mode.id] = (
-                    [0x02, 0x00] if value else [0x01, 0x00]
+                    DEVICE_MODE_WIRE_PILOT_ON if value else DEVICE_MODE_WIRE_PILOT_OFF
                 )
             else:
                 attrs[attr] = value
@@ -63,7 +66,8 @@ class LegrandCluster(CustomCluster):
         super()._update_attribute(attrid, value)
         if attrid == LegrandCluster.AttributeDefs.device_mode.id:
             self._update_attribute(
-                LegrandCluster.AttributeDefs.wire_pilot_mode.id, value[0] == 0x02
+                LegrandCluster.AttributeDefs.wire_pilot_mode.id,
+                (value == DEVICE_MODE_WIRE_PILOT_ON),
             )
 
 
@@ -81,9 +85,9 @@ class HeatMode(t.enum8):
 class LegrandWirePilotCluster(CustomCluster):
     """Legrand wire pilot manufacturer-specific cluster."""
 
-    cluster_id = MANUFACTURER_SPECIFIC_CLUSTER_ID_2
-    name = "LegrandWirePilotCluster"
-    ep_attribute = "legrand_wire_pilot_cluster"
+    cluster_id = 0xFC40
+    name = "Legrand Wire Pilot"
+    ep_attribute = "legrand_wire_pilot"
 
     class AttributeDefs(BaseAttributeDefs):
         """Attribute definitions for LegrandCluster."""
@@ -100,20 +104,8 @@ class LegrandWirePilotCluster(CustomCluster):
         set_heat_mode = ZCLCommandDef(
             id=0x00,
             schema={"mode": HeatMode},
-            direction=Direction.Client_to_Server,
             is_manufacturer_specific=True,
         )
-
-    async def write_attributes(self, attributes, manufacturer=None) -> list:
-        """Write attributes to the cluster."""
-
-        attrs = {}
-        for attr, value in attributes.items():
-            attr_def = self.find_attribute(attr)
-            attr_id = attr_def.id
-            if attr_id == LegrandWirePilotCluster.AttributeDefs.heat_mode.id:
-                await self.set_heat_mode(value, manufacturer=manufacturer)
-        return await super().write_attributes(attrs, manufacturer)
 
 
 (
