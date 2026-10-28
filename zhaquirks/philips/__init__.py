@@ -10,7 +10,13 @@ import zigpy.types as t
 from zigpy.zcl import foundation
 from zigpy.zcl.clusters.general import Basic
 from zigpy.zcl.clusters.measurement import OccupancySensing
-from zigpy.zcl.foundation import BaseCommandDefs, ZCLAttributeDef, ZCLCommandDef
+from zigpy.zcl.foundation import (
+    BaseAttributeDefs,
+    BaseCommandDefs,
+    DataTypeId,
+    ZCLAttributeDef,
+    ZCLCommandDef,
+)
 
 from zhaquirks.clusters import CustomCluster
 from zhaquirks.const import (
@@ -37,6 +43,7 @@ from zhaquirks.const import (
     TURN_ON,
     ZHA_SEND_EVENT,
 )
+from zhaquirks.philips.hue_light_update import HueLightUpdate
 
 PHILIPS = "Philips"
 SIGNIFY = "Signify Netherlands B.V."
@@ -348,11 +355,21 @@ class PhilipsHueLightCluster(CustomCluster):
     ep_attribute: Final[str] = "philips_hue_light_cluster"
     name: Final[str] = "PhilipsHueLightCluster"
 
+    class AttributeDefs(BaseAttributeDefs):
+        """Attribute definitions."""
+
+        state: Final = ZCLAttributeDef(
+            id=0x0002,
+            type=HueLightUpdate,
+            zcl_type=DataTypeId.octstr,
+            manufacturer_code=0x100B,
+        )
+
     class ServerCommandDefs(BaseCommandDefs):
         """Server command definitions."""
 
         multicolor: Final = ZCLCommandDef(
             id=0x00,
-            schema={"data": t.SerializableBytes},
+            schema={"data": HueLightUpdate},
             is_manufacturer_specific=True,
         )

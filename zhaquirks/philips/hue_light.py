@@ -1,7 +1,179 @@
 """Philips Hue devices."""
 
+from typing import Final
+
+from zha.application.helpers import safe_read
+from zha.application.platforms import AttrConfig, ClusterConfig
+from zha.application.platforms.light import HueLight
+from zha.application.platforms.light.const import (
+    EFFECT_OFF,
+    ColorMode,
+    FlashMode,
+    LightEntityFeature,
+)
+from zigpy.zcl import AttributeReadEvent, AttributeReportedEvent, AttributeUpdatedEvent
+
 from zhaquirks.builder import QuirkBuilder
 from zhaquirks.philips import PHILIPS, SIGNIFY, PhilipsHueLightCluster
+from zhaquirks.philips.hue_light_update import HueColorXY, HueEffectType, HueLightUpdate
+
+HUE_EFFECTS: Final = {
+    effect.name.lower(): effect
+    for effect in HueEffectType
+    if effect is not HueEffectType.NoEffect
+}
+
+
+class HueEffectLight(HueLight):
+    """Hue light with Hue effects."""
+
+    _server_cluster_config = {
+        **HueLight._server_cluster_config,
+        PhilipsHueLightCluster.cluster_id: ClusterConfig(
+            attributes={
+                PhilipsHueLightCluster.AttributeDefs.state: AttrConfig(
+                    read_on_startup=True
+                ),
+            },
+        ),
+    }
+
+    _effect_list: list[str]
+
+    def __init__(self, endpoint, device, **kwargs) -> None:
+        """Initialize the light."""
+        self._hue_cluster = endpoint.zigpy_endpoint.in_clusters[
+            PhilipsHueLightCluster.cluster_id
+        ]
+        super().__init__(endpoint, device, **kwargs)
+
+    def on_add(self) -> None:
+        """Run when entity is added."""
+        super().on_add()
+
+        for event_type in (
+            AttributeReadEvent,
+            AttributeReportedEvent,
+            AttributeUpdatedEvent,
+        ):
+            self._on_remove_callbacks.append(
+                self._hue_cluster.on_event(
+                    event_type.event_type, self.handle_hue_state_updated
+                )
+            )
+
+    def recompute_capabilities(self) -> None:
+        """Recompute capabilities."""
+        super().recompute_capabilities()
+        self._supported_features |= LightEntityFeature.EFFECT
+        self._effect_list = [*self._effect_list, *HUE_EFFECTS]
+        self._update_hue_effect(
+            self._hue_cluster.get(PhilipsHueLightCluster.AttributeDefs.state.name)
+        )
+
+    def _update_hue_effect(self, state: bytes | None) -> None:
+        if state is None:
+            return
+
+        update, _ = HueLightUpdate.deserialize(state)
+
+        if update.effect_type not in (None, HueEffectType.NoEffect):
+            self._effect = update.effect_type.name.lower()
+        elif self._effect in HUE_EFFECTS:
+            self._effect = EFFECT_OFF
+
+    def handle_hue_state_updated(
+        self,
+        event: AttributeReadEvent | AttributeReportedEvent | AttributeUpdatedEvent,
+    ) -> None:
+        """Update the effect from the Hue state."""
+        if event.attribute_id != PhilipsHueLightCluster.AttributeDefs.state.id:
+            return
+
+        self._update_hue_effect(event.value)
+        self.maybe_emit_state_changed_event()
+
+    async def async_update(self) -> None:
+        """Attempt to retrieve the state from the light."""
+        await super().async_update()
+
+        if (
+            self.is_transitioning
+            or not self.device.gateway.config.allow_polling
+            or not self.device.available
+        ):
+            return
+
+        await safe_read(
+            self._hue_cluster,
+            [PhilipsHueLightCluster.AttributeDefs.state.name],
+            allow_cache=False,
+            only_cache=False,
+        )
+
+    async def async_turn_on(
+        self,
+        *,
+        transition: float | None = None,
+        brightness: int | None = None,
+        effect: str | None = None,
+        flash: FlashMode | None = None,
+        color_temp: int | None = None,
+        xy_color: tuple[float, float] | None = None,
+    ) -> None:
+        """Turn the entity on."""
+        if effect not in HUE_EFFECTS:
+            if effect is not None and self._effect in HUE_EFFECTS:
+                await self._hue_cluster.multicolor(
+                    data=HueLightUpdate(effect_type=HueEffectType.NoEffect)
+                )
+                self._effect = EFFECT_OFF
+
+            await super().async_turn_on(
+                transition=transition,
+                brightness=brightness,
+                effect=effect,
+                flash=flash,
+                color_temp=color_temp,
+                xy_color=xy_color,
+            )
+            return
+
+        # Turn on, set the color, and start the effect in a single update
+        update = HueLightUpdate(on_off=True, effect_type=HUE_EFFECTS[effect])
+
+        if transition is not None:
+            update.fade_speed = int(10 * transition)
+
+        if brightness is not None:
+            update.brightness = min(254, brightness)
+
+        if color_temp is not None:
+            update.color_mirek = color_temp
+
+        if xy_color is not None:
+            update.color_xy = HueColorXY.from_xy(*xy_color)
+
+        await self._hue_cluster.multicolor(data=update)
+
+        self._state = True
+        self._effect = effect
+
+        if update.brightness is not None:
+            self._brightness = update.brightness
+
+        if color_temp is not None:
+            self._color_mode = ColorMode.COLOR_TEMP
+            self._color_temp = color_temp
+            self._xy_color = None
+
+        if xy_color is not None:
+            self._color_mode = ColorMode.XY
+            self._xy_color = xy_color
+            self._color_temp = None
+
+        self.maybe_emit_state_changed_event()
+
 
 (
     QuirkBuilder()
@@ -223,6 +395,7 @@ from zhaquirks.philips import PHILIPS, SIGNIFY, PhilipsHueLightCluster
         manufacturer="Philips",
     )
     .replaces(PhilipsHueLightCluster, endpoint_id=11)
+    .replaces_entity(HueLight, HueEffectLight, endpoint_id=11)
     .add_to_registry()
 )
 
@@ -245,6 +418,16 @@ from zhaquirks.philips import PHILIPS, SIGNIFY, PhilipsHueLightCluster
         manufacturer="Philips",
     )
     .replaces(PhilipsHueLightCluster, endpoint_id=11)
+    .replaces_entity(HueLight, HueEffectLight, endpoint_id=11)
+    .add_to_registry()
+)
+
+(
+    QuirkBuilder()
+    .applies_to(SIGNIFY, "LCA007")
+    .applies_to(SIGNIFY, "LCE001")
+    .replaces(PhilipsHueLightCluster, endpoint_id=11)
+    .replaces_entity(HueLight, HueEffectLight, endpoint_id=11)
     .add_to_registry()
 )
 
