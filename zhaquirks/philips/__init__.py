@@ -1,6 +1,7 @@
 """Module for Philips quirks implementations."""
 
 import asyncio
+import dataclasses
 import itertools
 import logging
 import time
@@ -13,7 +14,6 @@ from zigpy.zcl.clusters.measurement import OccupancySensing
 from zigpy.zcl.foundation import (
     BaseAttributeDefs,
     BaseCommandDefs,
-    DataTypeId,
     ZCLAttributeDef,
     ZCLCommandDef,
 )
@@ -43,7 +43,14 @@ from zhaquirks.const import (
     TURN_ON,
     ZHA_SEND_EVENT,
 )
-from zhaquirks.philips.hue_light_update import HueLightUpdate
+from zhaquirks.philips.hue_entertainment import (
+    DEFAULT_SMOOTHING,
+    HueEntertainmentMode,
+    HueEntertainmentRecord,
+    HueSegment,
+    HueSegment16,
+)
+from zhaquirks.philips.hue_light_update import HueGradientColor, HueLightUpdate
 
 PHILIPS = "Philips"
 SIGNIFY = "Signify Netherlands B.V."
@@ -358,11 +365,9 @@ class PhilipsHueLightCluster(CustomCluster):
     class AttributeDefs(BaseAttributeDefs):
         """Attribute definitions."""
 
+        # Current state, as a serialized `HueLightUpdate`
         state: Final = ZCLAttributeDef(
-            id=0x0002,
-            type=HueLightUpdate,
-            zcl_type=DataTypeId.octstr,
-            manufacturer_code=0x100B,
+            id=0x0002, type=t.LVBytes, manufacturer_code=0x100B
         )
 
     class ServerCommandDefs(BaseCommandDefs):
@@ -372,4 +377,231 @@ class PhilipsHueLightCluster(CustomCluster):
             id=0x00,
             schema={"data": HueLightUpdate},
             is_manufacturer_specific=True,
+        )
+
+
+@dataclasses.dataclass
+class HueSegmentState:
+    """State of one streamed segment."""
+
+    on: bool = False
+    brightness: int = 254
+    xy_color: tuple[float, float] = (0.3127, 0.3290)
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class HueSegmentsUpdatedEvent:
+    """Event generated when the segment states of an entertainment stream change."""
+
+    event_type: Final[str] = "hue_segments_updated"
+
+    device_ieee: str
+    endpoint_id: int
+    streaming: bool
+    segments: dict[int, HueSegmentState]
+
+
+class PhilipsHueEntertainmentCluster(CustomCluster):
+    """Philips Hue entertainment cluster, streaming the colors of segments."""
+
+    cluster_id: Final[t.uint16_t] = 0xFC01
+    ep_attribute: Final[str] = "philips_hue_entertainment"
+    name: Final[str] = "Philips Hue Entertainment Cluster"
+
+    class AttributeDefs(BaseAttributeDefs):
+        """Attribute definitions."""
+
+        light_balance: Final = ZCLAttributeDef(
+            id=0x0005, type=t.uint8_t, manufacturer_code=0x100B
+        )
+
+    class ServerCommandDefs(BaseCommandDefs):
+        """Server command definitions."""
+
+        frame: Final = ZCLCommandDef(
+            id=0x01,
+            schema={
+                "counter": t.uint32_t,
+                "smoothing": t.uint16_t,
+                "records": t.List[HueEntertainmentRecord],
+            },
+            manufacturer_code=0x100B,
+        )
+        reset: Final = ZCLCommandDef(
+            id=0x03,
+            schema={
+                "unknown1": t.uint8_t,
+                "unknown2": t.uint8_t,
+                "counter": t.uint32_t,
+            },
+            manufacturer_code=0x100B,
+        )
+
+        # The layout and map commands come in get/set pairs, all starting with an
+        # offset. Only offset 0 has been tried. Replies start with a status and the
+        # offset, which is 0xFF for a malformed request. Setting a layout with no
+        # segments empties it. An LCX004 (1.116.5) supports commands 0x01 and 0x03-0x09
+        # only, and ships with a layout of 3 segments of 5, 6, and 5 pixels.
+        get_segment_layout: Final = ZCLCommandDef(
+            id=0x04,
+            schema={"offset": t.uint8_t},
+            manufacturer_code=0x100B,
+        )
+        set_segment_layout: Final = ZCLCommandDef(
+            id=0x05,
+            schema={
+                "offset": t.uint8_t,
+                "segments": t.LVList[HueSegment, t.uint8_t],
+            },
+            manufacturer_code=0x100B,
+        )
+        get_segment_map: Final = ZCLCommandDef(
+            id=0x06,
+            schema={"offset": t.uint8_t},
+            manufacturer_code=0x100B,
+        )
+        # Gives each segment a virtual network address for frame records
+        set_segment_map: Final = ZCLCommandDef(
+            id=0x07,
+            schema={
+                "offset": t.uint8_t,
+                "addresses": t.LVList[t.uint16_t, t.uint8_t],
+            },
+            manufacturer_code=0x100B,
+        )
+        get_segment_layout_16: Final = ZCLCommandDef(
+            id=0x08,
+            schema={"offset": t.uint8_t},
+            manufacturer_code=0x100B,
+        )
+        set_segment_layout_16: Final = ZCLCommandDef(
+            id=0x09,
+            schema={
+                "offset": t.uint8_t,
+                "segments": t.LVList[HueSegment16, t.uint8_t],
+            },
+            manufacturer_code=0x100B,
+        )
+
+    class ClientCommandDefs(BaseCommandDefs):
+        """Client command definitions, replies to the server commands."""
+
+        get_segment_layout_rsp: Final = ZCLCommandDef(
+            id=0x04,
+            schema={
+                "status": foundation.Status,
+                "offset": t.uint8_t,
+                "segments": t.Optional(t.LVList[HueSegment, t.uint8_t]),
+            },
+            manufacturer_code=0x100B,
+        )
+        set_segment_layout_rsp: Final = ZCLCommandDef(
+            id=0x05,
+            schema={"status": foundation.Status, "offset": t.uint8_t},
+            manufacturer_code=0x100B,
+        )
+        get_segment_map_rsp: Final = ZCLCommandDef(
+            id=0x06,
+            schema={
+                "status": foundation.Status,
+                "offset": t.uint8_t,
+                "addresses": t.Optional(t.LVList[t.uint16_t, t.uint8_t]),
+            },
+            manufacturer_code=0x100B,
+        )
+        set_segment_map_rsp: Final = ZCLCommandDef(
+            id=0x07,
+            schema={"status": foundation.Status, "offset": t.uint8_t},
+            manufacturer_code=0x100B,
+        )
+        get_segment_layout_16_rsp: Final = ZCLCommandDef(
+            id=0x08,
+            schema={
+                "status": foundation.Status,
+                "offset": t.uint8_t,
+                "segments": t.Optional(t.LVList[HueSegment16, t.uint8_t]),
+            },
+            manufacturer_code=0x100B,
+        )
+        set_segment_layout_16_rsp: Final = ZCLCommandDef(
+            id=0x09,
+            schema={"status": foundation.Status, "offset": t.uint8_t},
+            manufacturer_code=0x100B,
+        )
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize the stream state."""
+        super().__init__(*args, **kwargs)
+        self.segments: dict[int, HueSegmentState] = {}
+        self.streaming = False
+        self._counter = 0
+
+    async def _reset_stream(self) -> None:
+        await self.reset(
+            unknown1=0,
+            unknown2=1,
+            counter=self._counter,
+            expect_reply=False,
+            disable_default_response=True,
+        )
+
+    async def send_segments(self) -> None:
+        """Stream the segment states, starting the stream if needed."""
+        # Segments are addressed by the network address plus the segment index
+        nwk = self.endpoint.device.nwk
+
+        if not self.streaming:
+            await self._reset_stream()
+            await self.write_attributes({self.AttributeDefs.light_balance: 0xFE})
+            await self.set_segment_map(
+                offset=0,
+                addresses=[nwk + segment for segment in sorted(self.segments)],
+                expect_reply=False,
+                disable_default_response=True,
+            )
+            self.streaming = True
+
+        await self.frame(
+            counter=self._counter,
+            smoothing=DEFAULT_SMOOTHING,
+            records=[
+                HueEntertainmentRecord(
+                    address=nwk + segment,
+                    mode=HueEntertainmentMode.Segment,
+                    brightness=round(state.brightness / 255 * 0x7FF) if state.on else 0,
+                    color=HueGradientColor.from_xy(*state.xy_color),
+                )
+                for segment, state in sorted(self.segments.items())
+            ],
+            expect_reply=False,
+            disable_default_response=True,
+        )
+        self._counter += 1
+        self._emit_segments_updated()
+
+    async def stop_stream(self) -> None:
+        """Stop streaming, returning the light to its normal state."""
+        if not self.streaming:
+            return
+
+        await self._reset_stream()
+        self.streaming = False
+
+        for state in self.segments.values():
+            state.on = False
+
+        self._emit_segments_updated()
+
+    def _emit_segments_updated(self) -> None:
+        self.emit(
+            HueSegmentsUpdatedEvent.event_type,
+            HueSegmentsUpdatedEvent(
+                device_ieee=str(self.endpoint.device.ieee),
+                endpoint_id=self.endpoint.endpoint_id,
+                streaming=self.streaming,
+                segments={
+                    segment: dataclasses.replace(state)
+                    for segment, state in self.segments.items()
+                },
+            ),
         )

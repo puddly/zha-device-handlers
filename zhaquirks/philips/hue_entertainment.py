@@ -26,6 +26,20 @@ class HueEntertainmentMode(t.enum5):
     Device = 0b01011
 
 
+class HueSegment(t.Struct):
+    """Pixels of a gradient light making up one segment."""
+
+    start: t.uint8_t
+    length: t.uint8_t
+
+
+class HueSegment16(t.Struct):
+    """Pixels of a gradient light making up one segment, with 16-bit fields."""
+
+    start: t.uint16_t
+    length: t.uint16_t
+
+
 class HueEntertainmentRecord(t.Struct):
     """Color and brightness of a light, or of one of its segments."""
 

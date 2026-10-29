@@ -1,10 +1,10 @@
 """Philips Hue devices."""
 
-from typing import Final
+from typing import Any, Final
 
 from zha.application.helpers import safe_read
-from zha.application.platforms import AttrConfig, ClusterConfig
-from zha.application.platforms.light import HueLight
+from zha.application.platforms import AttrConfig, ClusterConfig, ZclPlatformEntity
+from zha.application.platforms.light import BaseLight, HueLight
 from zha.application.platforms.light.const import (
     EFFECT_OFF,
     ColorMode,
@@ -14,7 +14,14 @@ from zha.application.platforms.light.const import (
 from zigpy.zcl import AttributeReadEvent, AttributeReportedEvent, AttributeUpdatedEvent
 
 from zhaquirks.builder import QuirkBuilder
-from zhaquirks.philips import PHILIPS, SIGNIFY, PhilipsHueLightCluster
+from zhaquirks.philips import (
+    PHILIPS,
+    SIGNIFY,
+    HueSegmentState,
+    HueSegmentsUpdatedEvent,
+    PhilipsHueEntertainmentCluster,
+    PhilipsHueLightCluster,
+)
 from zhaquirks.philips.hue_gradient_scenes import HUE_GRADIENT_SCENES
 from zhaquirks.philips.hue_light_update import HueColorXY, HueEffectType, HueLightUpdate
 
@@ -185,6 +192,103 @@ class HueEffectLight(HueLight):
             self._color_temp = None
 
         self.maybe_emit_state_changed_event()
+
+
+class HueGradientLight(HueEffectLight):
+    """Hue gradient light, with gradient scenes. Using it stops segment streaming."""
+
+    _GRADIENT_SCENES = HUE_GRADIENT_SCENES
+
+    def __init__(self, endpoint, device, **kwargs) -> None:
+        """Initialize the light."""
+        self._entertainment_cluster = endpoint.zigpy_endpoint.in_clusters[
+            PhilipsHueEntertainmentCluster.cluster_id
+        ]
+        super().__init__(endpoint, device, **kwargs)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the entity on."""
+        await self._entertainment_cluster.stop_stream()
+        await super().async_turn_on(**kwargs)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the entity off."""
+        await self._entertainment_cluster.stop_stream()
+        await super().async_turn_off(**kwargs)
+
+
+class HueSegmentLight(BaseLight, ZclPlatformEntity):
+    """Segment of a Hue gradient light, controlled by entertainment streaming."""
+
+    _attr_primary = False
+    _cluster: PhilipsHueEntertainmentCluster
+
+    def __init__(self, endpoint, device, *, segment: int, **kwargs) -> None:
+        """Initialize the segment."""
+        self._segment = segment
+        super().__init__(endpoint, device, **kwargs)
+        self._cluster.segments[segment] = HueSegmentState()
+        self._supported_color_modes = {ColorMode.XY}
+        self._color_mode = ColorMode.XY
+
+    @property
+    def _segment_state(self) -> HueSegmentState:
+        return self._cluster.segments[self._segment]
+
+    @property
+    def is_on(self) -> bool:
+        """Return true if the segment is on."""
+        return self._segment_state.on
+
+    @property
+    def brightness(self) -> int:
+        """Return the brightness of the segment."""
+        return self._segment_state.brightness
+
+    @property
+    def xy_color(self) -> tuple[float, float]:
+        """Return the color of the segment."""
+        return self._segment_state.xy_color
+
+    def on_add(self) -> None:
+        """Run when entity is added."""
+        super().on_add()
+        self._on_remove_callbacks.append(
+            self._cluster.on_event(
+                HueSegmentsUpdatedEvent.event_type, self.handle_segments_updated
+            )
+        )
+
+    def handle_segments_updated(self, event: HueSegmentsUpdatedEvent) -> None:
+        """Update the state when the segments change."""
+        self.maybe_emit_state_changed_event()
+
+    async def async_turn_on(
+        self,
+        *,
+        transition: float | None = None,
+        brightness: int | None = None,
+        effect: str | None = None,
+        flash: FlashMode | None = None,
+        color_temp: int | None = None,
+        xy_color: tuple[float, float] | None = None,
+    ) -> None:
+        """Turn the segment on."""
+        state = self._segment_state
+        state.on = True
+
+        if brightness is not None:
+            state.brightness = brightness
+
+        if xy_color is not None:
+            state.xy_color = xy_color
+
+        await self._cluster.send_segments()
+
+    async def async_turn_off(self, *, transition: float | None = None) -> None:
+        """Turn the segment off."""
+        self._segment_state.on = False
+        await self._cluster.send_segments()
 
 
 (
