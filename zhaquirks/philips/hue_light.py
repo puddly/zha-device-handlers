@@ -15,6 +15,7 @@ from zigpy.zcl import AttributeReadEvent, AttributeReportedEvent, AttributeUpdat
 
 from zhaquirks.builder import QuirkBuilder
 from zhaquirks.philips import PHILIPS, SIGNIFY, PhilipsHueLightCluster
+from zhaquirks.philips.hue_gradient_scenes import HUE_GRADIENT_SCENES
 from zhaquirks.philips.hue_light_update import HueColorXY, HueEffectType, HueLightUpdate
 
 HUE_EFFECTS: Final = {
@@ -39,6 +40,9 @@ class HueEffectLight(HueLight):
     }
 
     _effect_list: list[str]
+
+    # Gradient scenes, listed as effects
+    _GRADIENT_SCENES: dict[str, HueLightUpdate] = {}
 
     def __init__(self, endpoint, device, **kwargs) -> None:
         """Initialize the light."""
@@ -66,7 +70,7 @@ class HueEffectLight(HueLight):
         """Recompute capabilities."""
         super().recompute_capabilities()
         self._supported_features |= LightEntityFeature.EFFECT
-        self._effect_list = [*self._effect_list, *HUE_EFFECTS]
+        self._effect_list = [*self._effect_list, *HUE_EFFECTS, *self._GRADIENT_SCENES]
         self._update_hue_effect(
             self._hue_cluster.get(PhilipsHueLightCluster.AttributeDefs.state.name)
         )
@@ -122,8 +126,17 @@ class HueEffectLight(HueLight):
         xy_color: tuple[float, float] | None = None,
     ) -> None:
         """Turn the entity on."""
-        if effect not in HUE_EFFECTS:
-            if effect is not None and self._effect in HUE_EFFECTS:
+        if effect in HUE_EFFECTS:
+            update = HueLightUpdate(on_off=True, effect_type=HUE_EFFECTS[effect])
+        elif effect in self._GRADIENT_SCENES:
+            # The gradient replaces any running effect
+            update = self._GRADIENT_SCENES[effect].replace(
+                on_off=True, effect_type=HueEffectType.NoEffect
+            )
+        else:
+            if effect is not None and (
+                self._effect in HUE_EFFECTS or self._effect in self._GRADIENT_SCENES
+            ):
                 await self._hue_cluster.multicolor(
                     data=HueLightUpdate(effect_type=HueEffectType.NoEffect)
                 )
@@ -140,7 +153,6 @@ class HueEffectLight(HueLight):
             return
 
         # Turn on, set the color, and start the effect in a single update
-        update = HueLightUpdate(on_off=True, effect_type=HUE_EFFECTS[effect])
 
         if transition is not None:
             update.fade_speed = int(10 * transition)
