@@ -3,7 +3,12 @@
 from typing import Any, Final
 
 from zha.application.helpers import safe_read
-from zha.application.platforms import AttrConfig, ClusterConfig, ZclPlatformEntity
+from zha.application.platforms import (
+    AttrConfig,
+    ClusterConfig,
+    EntityCategory,
+    ZclPlatformEntity,
+)
 from zha.application.platforms.light import BaseLight, HueLight
 from zha.application.platforms.light.const import (
     EFFECT_OFF,
@@ -11,6 +16,7 @@ from zha.application.platforms.light.const import (
     FlashMode,
     LightEntityFeature,
 )
+from zha.application.platforms.number import BaseNumber
 from zigpy.zcl import AttributeReadEvent, AttributeReportedEvent, AttributeUpdatedEvent
 
 from zhaquirks.builder import QuirkBuilder
@@ -227,12 +233,17 @@ class HueSegmentLight(BaseLight, ZclPlatformEntity):
         """Initialize the segment."""
         self._segment = segment
         super().__init__(endpoint, device, **kwargs)
-        self._cluster.segments[segment] = HueSegmentState()
         self._supported_color_modes = {ColorMode.XY}
         self._color_mode = ColorMode.XY
 
+    def _is_supported(self) -> bool:
+        # Segments come and go with the segment count of the light
+        segments = self._cluster.segments
+        return segments is not None and self._segment < len(segments)
+
     @property
     def _segment_state(self) -> HueSegmentState:
+        assert self._cluster.segments is not None
         return self._cluster.segments[self._segment]
 
     @property
@@ -289,6 +300,69 @@ class HueSegmentLight(BaseLight, ZclPlatformEntity):
         """Turn the segment off."""
         self._segment_state.on = False
         await self._cluster.send_segments()
+
+
+class HueSegmentCountNumber(BaseNumber, ZclPlatformEntity):
+    """Number of segments a Hue gradient light is evenly split into."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_native_min_value = 1
+    _attr_native_step = 1
+    _cluster: PhilipsHueEntertainmentCluster
+
+    _server_cluster_config = {
+        PhilipsHueEntertainmentCluster.cluster_id: ClusterConfig(
+            attributes={
+                PhilipsHueEntertainmentCluster.AttributeDefs.max_segment_count: (
+                    AttrConfig(read_on_startup=True)
+                ),
+                PhilipsHueEntertainmentCluster.AttributeDefs.pixel_count: AttrConfig(
+                    read_on_startup=True
+                ),
+            },
+        ),
+    }
+
+    def on_add(self) -> None:
+        """Run when entity is added."""
+        super().on_add()
+
+        # The segment lights are only created once the layout is known
+        if self._cluster.segments is None:
+            self._tracked_tasks.append(
+                self.device.gateway.async_create_background_task(
+                    self._async_read_segment_layout(),
+                    name=f"read_segment_layout_{self.unique_id}",
+                    eager_start=True,
+                    untracked=True,
+                )
+            )
+
+    async def _async_read_segment_layout(self) -> None:
+        await self._cluster.read_segment_layout()
+        await self.device.recompute_entities()
+        self.maybe_emit_state_changed_event()
+
+    @property
+    def native_max_value(self) -> float:
+        """Return the maximum segment count of the light."""
+        return self._cluster.get(
+            PhilipsHueEntertainmentCluster.AttributeDefs.max_segment_count.name
+        )
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the segment count."""
+        if self._cluster.segments is None:
+            return None
+
+        return len(self._cluster.segments)
+
+    async def async_set_native_value(self, value: float) -> None:
+        """Split the light into a new number of segments."""
+        await self._cluster.write_segment_count(int(value))
+        await self.device.recompute_entities()
+        self.maybe_emit_state_changed_event()
 
 
 (
@@ -526,7 +600,10 @@ class HueSegmentLight(BaseLight, ZclPlatformEntity):
     .add_to_registry()
 )
 
-(
+# Segment lights beyond the segment count of a light are not created
+LCX004_MAX_SEGMENTS: Final = 10
+
+lcx004 = (
     QuirkBuilder()
     .applies_to(SIGNIFY, "LCX004")
     .friendly_name(
@@ -534,9 +611,28 @@ class HueSegmentLight(BaseLight, ZclPlatformEntity):
         manufacturer="Philips",
     )
     .replaces(PhilipsHueLightCluster, endpoint_id=11)
-    .replaces_entity(HueLight, HueEffectLight, endpoint_id=11)
-    .add_to_registry()
+    .replaces(PhilipsHueEntertainmentCluster, endpoint_id=11)
+    .replaces_entity(HueLight, HueGradientLight, endpoint_id=11)
+    .adds_entity(
+        HueSegmentCountNumber,
+        endpoint_id=11,
+        cluster_id=PhilipsHueEntertainmentCluster.cluster_id,
+        unique_id_suffix="segment_count",
+        fallback_name="Segment count",
+    )
 )
+
+for segment in range(LCX004_MAX_SEGMENTS):
+    lcx004.adds_entity(
+        HueSegmentLight,
+        endpoint_id=11,
+        cluster_id=PhilipsHueEntertainmentCluster.cluster_id,
+        segment=segment,
+        unique_id_suffix=f"segment_{segment + 1}",
+        fallback_name=f"Segment {segment + 1}",
+    )
+
+lcx004.add_to_registry()
 
 (
     QuirkBuilder()

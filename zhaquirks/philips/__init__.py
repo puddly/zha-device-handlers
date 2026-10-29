@@ -398,7 +398,7 @@ class HueSegmentsUpdatedEvent:
     device_ieee: str
     endpoint_id: int
     streaming: bool
-    segments: dict[int, HueSegmentState]
+    segments: list[HueSegmentState]
 
 
 class PhilipsHueEntertainmentCluster(CustomCluster):
@@ -411,6 +411,12 @@ class PhilipsHueEntertainmentCluster(CustomCluster):
     class AttributeDefs(BaseAttributeDefs):
         """Attribute definitions."""
 
+        max_segment_count: Final = ZCLAttributeDef(
+            id=0x0002, type=t.uint8_t, access="r", manufacturer_code=0x100B
+        )
+        pixel_count: Final = ZCLAttributeDef(
+            id=0x0004, type=t.uint8_t, access="rp", manufacturer_code=0x100B
+        )
         light_balance: Final = ZCLAttributeDef(
             id=0x0005, type=t.uint8_t, manufacturer_code=0x100B
         )
@@ -532,9 +538,31 @@ class PhilipsHueEntertainmentCluster(CustomCluster):
     def __init__(self, *args, **kwargs) -> None:
         """Initialize the stream state."""
         super().__init__(*args, **kwargs)
-        self.segments: dict[int, HueSegmentState] = {}
+        # One state per segment of the layout, or `None` if the layout was not read yet
+        self.segments: list[HueSegmentState] | None = None
         self.streaming = False
         self._counter = 0
+
+    async def read_segment_layout(self) -> None:
+        """Read the segment layout from the light, resetting the segment states."""
+        rsp = await self.get_segment_layout(offset=0)
+        self.segments = [HueSegmentState() for _ in rsp.segments]
+
+    async def write_segment_count(self, count: int) -> None:
+        """Split the pixels of the light evenly into `count` segments."""
+        await self.stop_stream()
+
+        pixels = self.get(self.AttributeDefs.pixel_count.name)
+        starts = [round(index * pixels / count) for index in range(count + 1)]
+
+        await self.set_segment_layout(
+            offset=0,
+            segments=[
+                HueSegment(start=start, length=end - start)
+                for start, end in itertools.pairwise(starts)
+            ],
+        )
+        await self.read_segment_layout()
 
     async def _reset_stream(self) -> None:
         await self.reset(
@@ -555,7 +583,7 @@ class PhilipsHueEntertainmentCluster(CustomCluster):
             await self.write_attributes({self.AttributeDefs.light_balance: 0xFE})
             await self.set_segment_map(
                 offset=0,
-                addresses=[nwk + segment for segment in sorted(self.segments)],
+                addresses=[nwk + segment for segment in range(len(self.segments))],
                 expect_reply=False,
                 disable_default_response=True,
             )
@@ -571,7 +599,7 @@ class PhilipsHueEntertainmentCluster(CustomCluster):
                     brightness=round(state.brightness / 255 * 0x7FF) if state.on else 0,
                     color=HueGradientColor.from_xy(*state.xy_color),
                 )
-                for segment, state in sorted(self.segments.items())
+                for segment, state in enumerate(self.segments)
             ],
             expect_reply=False,
             disable_default_response=True,
@@ -587,7 +615,7 @@ class PhilipsHueEntertainmentCluster(CustomCluster):
         await self._reset_stream()
         self.streaming = False
 
-        for state in self.segments.values():
+        for state in self.segments:
             state.on = False
 
         self._emit_segments_updated()
@@ -599,9 +627,6 @@ class PhilipsHueEntertainmentCluster(CustomCluster):
                 device_ieee=str(self.endpoint.device.ieee),
                 endpoint_id=self.endpoint.endpoint_id,
                 streaming=self.streaming,
-                segments={
-                    segment: dataclasses.replace(state)
-                    for segment, state in self.segments.items()
-                },
+                segments=[dataclasses.replace(state) for state in self.segments],
             ),
         )
